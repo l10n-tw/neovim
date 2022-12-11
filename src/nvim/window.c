@@ -843,16 +843,16 @@ void win_config_float(win_T *wp, FloatConfig fconfig)
       grid_adjust(&grid, &row_off, &col_off);
       row += row_off;
       col += col_off;
+      if (wp->w_float_config.bufpos.lnum >= 0) {
+        pos_T pos = { wp->w_float_config.bufpos.lnum + 1,
+                      wp->w_float_config.bufpos.col, 0 };
+        int trow, tcol, tcolc, tcole;
+        textpos2screenpos(parent, &pos, &trow, &tcol, &tcolc, &tcole, true);
+        row += trow - 1;
+        col += tcol - 1;
+      }
     }
     api_clear_error(&dummy);
-    if (wp->w_float_config.bufpos.lnum >= 0) {
-      pos_T pos = { wp->w_float_config.bufpos.lnum + 1,
-                    wp->w_float_config.bufpos.col, 0 };
-      int trow, tcol, tcolc, tcole;
-      textpos2screenpos(wp, &pos, &trow, &tcol, &tcolc, &tcole, true);
-      row += trow - 1;
-      col += tcol - 1;
-    }
     wp->w_winrow = row;
     wp->w_wincol = col;
   } else {
@@ -1644,11 +1644,20 @@ bool win_valid_floating(const win_T *win)
 /// @param  win  window to check
 bool win_valid(const win_T *win) FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 {
+  return tabpage_win_valid(curtab, win);
+}
+
+/// Check if "win" is a pointer to an existing window in tabpage "tp".
+///
+/// @param  win  window to check
+static bool tabpage_win_valid(const tabpage_T *tp, const win_T *win)
+  FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
+{
   if (win == NULL) {
     return false;
   }
 
-  FOR_ALL_WINDOWS_IN_TAB(wp, curtab) {
+  FOR_ALL_WINDOWS_IN_TAB(wp, tp) {
     if (wp == win) {
       return true;
     }
@@ -2760,6 +2769,7 @@ int win_close(win_T *win, bool free_buf, bool force)
 
   if (win->w_floating) {
     ui_comp_remove_grid(&win->w_grid_alloc);
+    assert(first_tabpage != NULL);  // suppress clang "Dereference of NULL pointer"
     if (win->w_float_config.external) {
       for (tabpage_T *tp = first_tabpage; tp != NULL; tp = tp->tp_next) {
         if (tp == curtab) {
@@ -3048,6 +3058,7 @@ void win_close_othertab(win_T *win, int free_buf, tabpage_T *tp)
 static win_T *win_free_mem(win_T *win, int *dirp, tabpage_T *tp)
 {
   win_T *wp;
+  tabpage_T *win_tp = tp == NULL ? curtab : tp;
 
   if (!win->w_floating) {
     // Remove the window and its frame from the tree of frames.
@@ -3056,22 +3067,26 @@ static win_T *win_free_mem(win_T *win, int *dirp, tabpage_T *tp)
     xfree(frp);
   } else {
     *dirp = 'h';  // Dummy value.
-    if (win_valid(prevwin) && prevwin != win) {
-      wp = prevwin;
+    if (tp == NULL) {
+      if (win_valid(prevwin) && prevwin != win) {
+        wp = prevwin;
+      } else {
+        wp = firstwin;
+      }
     } else {
-      wp = firstwin;
+      if (tabpage_win_valid(tp, tp->tp_prevwin) && tp->tp_prevwin != win) {
+        wp = tp->tp_prevwin;
+      } else {
+        wp = tp->tp_firstwin;
+      }
     }
   }
   win_free(win, tp);
 
-  // When deleting the current window of another tab page select a new
-  // current window.
-  if (tp != NULL && win == tp->tp_curwin) {
-    if (win_valid(tp->tp_prevwin) && tp->tp_prevwin != win) {
-      tp->tp_curwin = tp->tp_prevwin;
-    } else {
-      tp->tp_curwin = tp->tp_firstwin;
-    }
+  // When deleting the current window in the tab, select a new current
+  // window.
+  if (win == win_tp->tp_curwin) {
+    win_tp->tp_curwin = wp;
   }
 
   return wp;
@@ -3106,6 +3121,8 @@ void win_free_all(void)
       aucmd_win[i].auc_win = NULL;
     }
   }
+
+  kv_destroy(aucmd_win_vec);
 
   while (firstwin != NULL) {
     int dummy;
@@ -5289,6 +5306,7 @@ void snapshot_windows_scroll_size(void)
 {
   FOR_ALL_WINDOWS_IN_TAB(wp, curtab) {
     wp->w_last_topline = wp->w_topline;
+    wp->w_last_topfill = wp->w_topfill;
     wp->w_last_leftcol = wp->w_leftcol;
     wp->w_last_skipcol = wp->w_skipcol;
     wp->w_last_width = wp->w_width;
@@ -5310,7 +5328,8 @@ void may_make_initial_scroll_size_snapshot(void)
 /// window.
 /// Returns the dictionary with refcount set to one.
 /// Returns NULL on internal error.
-static dict_T *make_win_info_dict(int width, int height, int topline, int leftcol, int skipcol)
+static dict_T *make_win_info_dict(int width, int height, int topline, int topfill, int leftcol,
+                                  int skipcol)
 {
   dict_T *const d = tv_dict_alloc();
   d->dv_refcount = 1;
@@ -5332,6 +5351,10 @@ static dict_T *make_win_info_dict(int width, int height, int topline, int leftco
     }
     tv.vval.v_number = topline;
     if (tv_dict_add_tv(d, S_LEN("topline"), &tv) == FAIL) {
+      break;
+    }
+    tv.vval.v_number = topfill;
+    if (tv_dict_add_tv(d, S_LEN("topfill"), &tv) == FAIL) {
       break;
     }
     tv.vval.v_number = leftcol;
@@ -5377,10 +5400,23 @@ static int check_window_scroll_resize(int *size_count, win_T **first_scroll_win,
   int tot_width = 0;
   int tot_height = 0;
   int tot_topline = 0;
+  int tot_topfill = 0;
   int tot_leftcol = 0;
   int tot_skipcol = 0;
 
   FOR_ALL_WINDOWS_IN_TAB(wp, curtab) {
+    // Skip floating windows that do not have a snapshot (usually becuase they are newly-created),
+    // as unlike split windows, creating floating windows do not cause other windows to resize.
+    if (wp->w_floating && wp->w_last_topline == 0) {
+      wp->w_last_topline = wp->w_topline;
+      wp->w_last_topfill = wp->w_topfill;
+      wp->w_last_leftcol = wp->w_leftcol;
+      wp->w_last_skipcol = wp->w_skipcol;
+      wp->w_last_width = wp->w_width;
+      wp->w_last_height = wp->w_height;
+      continue;
+    }
+
     const bool size_changed = wp->w_last_width != wp->w_width
                               || wp->w_last_height != wp->w_height;
     if (size_changed) {
@@ -5409,6 +5445,7 @@ static int check_window_scroll_resize(int *size_count, win_T **first_scroll_win,
     }
 
     const bool scroll_changed = wp->w_last_topline != wp->w_topline
+                                || wp->w_last_topfill != wp->w_topfill
                                 || wp->w_last_leftcol != wp->w_leftcol
                                 || wp->w_last_skipcol != wp->w_skipcol;
     if (scroll_changed) {
@@ -5423,10 +5460,11 @@ static int check_window_scroll_resize(int *size_count, win_T **first_scroll_win,
       int width = wp->w_width - wp->w_last_width;
       int height = wp->w_height - wp->w_last_height;
       int topline = wp->w_topline - wp->w_last_topline;
+      int topfill = wp->w_topfill - wp->w_last_topfill;
       int leftcol = wp->w_leftcol - wp->w_last_leftcol;
       int skipcol = wp->w_skipcol - wp->w_last_skipcol;
-      dict_T *d = make_win_info_dict(width, height,
-                                     topline, leftcol, skipcol);
+      dict_T *d = make_win_info_dict(width, height, topline,
+                                     topfill, leftcol, skipcol);
       if (d == NULL) {
         break;
       }
@@ -5441,14 +5479,15 @@ static int check_window_scroll_resize(int *size_count, win_T **first_scroll_win,
       tot_width += abs(width);
       tot_height += abs(height);
       tot_topline += abs(topline);
+      tot_topfill += abs(topfill);
       tot_leftcol += abs(leftcol);
       tot_skipcol += abs(skipcol);
     }
   }
 
   if (v_event != NULL) {
-    dict_T *alldict = make_win_info_dict(tot_width, tot_height,
-                                         tot_topline, tot_leftcol, tot_skipcol);
+    dict_T *alldict = make_win_info_dict(tot_width, tot_height, tot_topline,
+                                         tot_topfill, tot_leftcol, tot_skipcol);
     if (alldict != NULL) {
       if (tv_dict_add_dict(v_event, S_LEN("all"), alldict) == FAIL) {
         tv_dict_unref(alldict);

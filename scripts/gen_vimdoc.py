@@ -183,6 +183,7 @@ CONFIG = {
             'diagnostic.lua',
             'codelens.lua',
             'tagfunc.lua',
+            'semantic_tokens.lua',
             'handlers.lua',
             'util.lua',
             'log.lua',
@@ -258,17 +259,11 @@ CONFIG = {
             if name.lower() == 'treesitter'
             else f'*lua-treesitter-{name.lower()}*'),
         'fn_helptag_fmt': lambda fstem, name: (
-            f'*{name}()*'
-            if name != 'new'
-            else f'*{fstem}.{name}()*'),
-        # 'fn_helptag_fmt': lambda fstem, name: (
-        #     f'*vim.treesitter.{name}()*'
-        #     if fstem == 'treesitter'
-        #     else (
-        #         '*vim.lsp.client*'
-        #         # HACK. TODO(justinmk): class/structure support in lua2dox
-        #         if 'lsp.client' == f'{fstem}.{name}'
-        #         else f'*vim.lsp.{fstem}.{name}()*')),
+            f'*vim.{fstem}.{name}()*'
+            if fstem == 'treesitter'
+            else f'*{name}()*'
+            if name[0].isupper()
+            else f'*vim.treesitter.{fstem}.{name}()*'),
         'module_override': {},
         'append_only': [],
     }
@@ -496,7 +491,12 @@ def render_node(n, text, prefix='', indent='', width=text_width - indentation,
     if n.nodeName == 'preformatted':
         o = get_text(n, preformatted=True)
         ensure_nl = '' if o[-1] == '\n' else '\n'
-        text += '>{}{}\n<'.format(ensure_nl, o)
+        if o[0:4] == 'lua\n':
+            text += '>lua{}{}\n<'.format(ensure_nl, o[3:-1])
+        elif o[0:4] == 'vim\n':
+            text += '>vim{}{}\n<'.format(ensure_nl, o[3:-1])
+        else:
+            text += '>{}{}\n<'.format(ensure_nl, o)
 
     elif is_inline(n):
         text = doc_wrap(get_text(n), indent=indent, width=width)

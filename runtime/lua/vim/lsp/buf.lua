@@ -162,11 +162,11 @@ end
 ---         Predicate used to filter clients. Receives a client as argument and must return a
 ---         boolean. Clients matching the predicate are included. Example:
 ---
----         <pre>
----         -- Never request typescript-language-server for formatting
----         vim.lsp.buf.format {
----           filter = function(client) return client.name ~= "tsserver" end
----         }
+---         <pre>lua
+---           -- Never request typescript-language-server for formatting
+---           vim.lsp.buf.format {
+---             filter = function(client) return client.name ~= "tsserver" end
+---           }
 ---         </pre>
 ---
 ---     - async boolean|nil
@@ -464,7 +464,7 @@ end
 ---
 function M.list_workspace_folders()
   local workspace_folders = {}
-  for _, client in pairs(vim.lsp.buf_get_clients()) do
+  for _, client in pairs(vim.lsp.get_active_clients({ bufnr = 0 })) do
     for _, folder in pairs(client.workspace_folders or {}) do
       table.insert(workspace_folders, folder.name)
     end
@@ -489,7 +489,7 @@ function M.add_workspace_folder(workspace_folder)
     { { uri = vim.uri_from_fname(workspace_folder), name = workspace_folder } },
     { {} }
   )
-  for _, client in pairs(vim.lsp.buf_get_clients()) do
+  for _, client in pairs(vim.lsp.get_active_clients({ bufnr = 0 })) do
     local found = false
     for _, folder in pairs(client.workspace_folders or {}) do
       if folder.name == workspace_folder then
@@ -522,7 +522,7 @@ function M.remove_workspace_folder(workspace_folder)
     { {} },
     { { uri = vim.uri_from_fname(workspace_folder), name = workspace_folder } }
   )
-  for _, client in pairs(vim.lsp.buf_get_clients()) do
+  for _, client in pairs(vim.lsp.get_active_clients({ bufnr = 0 })) do
     for idx, folder in pairs(client.workspace_folders) do
       if folder.name == workspace_folder then
         vim.lsp.buf_notify(0, 'workspace/didChangeWorkspaceFolders', params)
@@ -555,11 +555,10 @@ end
 --- Send request to the server to resolve document highlights for the current
 --- text document position. This request can be triggered by a  key mapping or
 --- by events such as `CursorHold`, e.g.:
----
---- <pre>
---- autocmd CursorHold  <buffer> lua vim.lsp.buf.document_highlight()
---- autocmd CursorHoldI <buffer> lua vim.lsp.buf.document_highlight()
---- autocmd CursorMoved <buffer> lua vim.lsp.buf.clear_references()
+--- <pre>vim
+---   autocmd CursorHold  <buffer> lua vim.lsp.buf.document_highlight()
+---   autocmd CursorHoldI <buffer> lua vim.lsp.buf.document_highlight()
+---   autocmd CursorMoved <buffer> lua vim.lsp.buf.clear_references()
 --- </pre>
 ---
 --- Note: Usage of |vim.lsp.buf.document_highlight()| requires the following highlight groups

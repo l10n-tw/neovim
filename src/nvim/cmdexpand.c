@@ -103,6 +103,7 @@ static int sort_func_compare(const void *s1, const void *s2)
   return strcmp(p1, p2);
 }
 
+/// Escape special characters in the cmdline completion matches.
 static void ExpandEscape(expand_T *xp, char_u *str, int numfiles, char **files, int options)
 {
   int i;
@@ -745,6 +746,11 @@ char *ExpandOne(expand_T *xp, char *str, char *orig, int options, int mode)
     FreeWild(xp->xp_numfiles, xp->xp_files);
     xp->xp_numfiles = -1;
     XFREE_CLEAR(orig_save);
+
+    // The entries from xp_files may be used in the PUM, remove it.
+    if (compl_match_array != NULL) {
+      cmdline_pum_remove();
+    }
   }
   findex = 0;
 
@@ -1505,7 +1511,7 @@ static const char *set_context_by_cmdname(const char *cmd, cmdidx_T cmdidx, cons
       arg = (const char *)skipwhite(skiptowhite(arg));
       if (*arg != NUL) {
         xp->xp_context = EXPAND_NOTHING;
-        arg = (const char *)skip_regexp((char *)arg + 1, (uint8_t)(*arg), p_magic);
+        arg = (const char *)skip_regexp((char *)arg + 1, (uint8_t)(*arg), magic_isset());
       }
     }
     return (const char *)find_nextcmd(arg);
@@ -1544,17 +1550,21 @@ static const char *set_context_by_cmdname(const char *cmd, cmdidx_T cmdidx, cons
     if (delim) {
       // Skip "from" part.
       arg++;
-      arg = (const char *)skip_regexp((char *)arg, delim, p_magic);
-    }
-    // Skip "to" part.
-    while (arg[0] != NUL && (uint8_t)arg[0] != delim) {
-      if (arg[0] == '\\' && arg[1] != NUL) {
+      arg = (const char *)skip_regexp((char *)arg, delim, magic_isset());
+
+      if (arg[0] != NUL && arg[0] == delim) {
+        // Skip "to" part.
         arg++;
+        while (arg[0] != NUL && (uint8_t)arg[0] != delim) {
+          if (arg[0] == '\\' && arg[1] != NUL) {
+            arg++;
+          }
+          arg++;
+        }
+        if (arg[0] != NUL) {  // Skip delimiter.
+          arg++;
+        }
       }
-      arg++;
-    }
-    if (arg[0] != NUL) {  // Skip delimiter.
-      arg++;
     }
     while (arg[0] && strchr("|\"#", arg[0]) == NULL) {
       arg++;
@@ -1585,7 +1595,7 @@ static const char *set_context_by_cmdname(const char *cmd, cmdidx_T cmdidx, cons
         arg = (const char *)skipwhite(arg + 1);
 
         // Check for trailing illegal characters.
-        if (*arg && strchr("|\"\n", *arg) == NULL) {
+        if (*arg == NUL || strchr("|\"\n", *arg) == NULL) {
           xp->xp_context = EXPAND_NOTHING;
         } else {
           return arg;
@@ -2458,7 +2468,7 @@ static int ExpandFromContext(expand_T *xp, char *pat, int *num_file, char ***fil
     return nlua_expand_pat(xp, pat, num_file, file);
   }
 
-  regmatch.regprog = vim_regcomp(pat, p_magic ? RE_MAGIC : 0);
+  regmatch.regprog = vim_regcomp(pat, magic_isset() ? RE_MAGIC : 0);
   if (regmatch.regprog == NULL) {
     return FAIL;
   }
